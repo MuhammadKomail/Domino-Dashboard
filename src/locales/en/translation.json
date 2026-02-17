@@ -1,0 +1,18 @@
+{
+    "ajeek": "Ajeek",
+    "adminPortal": "Admin Portal",
+    "dashboard": "Dashboard",
+    "communication": "Communication",
+    "management": "Management",
+    "product_management": "Product Management",
+    "customer_management": "Customer Management",
+    "partner_management": "Partner Management",
+    "subcontractor_management": "Subcontractor Management",
+    "technician_management": "Technician Management",
+    "resource_management": "Resource Management",
+    "user_management": "User Management",
+    "logout": "Logout",
+    "profile": "Profile",
+    "english": "English",
+    "arabic": "Arabic"
+}
