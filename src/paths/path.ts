@@ -1,7 +1,7 @@
 /***** Note: All local and dynamic paths of (files, assets, icons) are defined here *****/
 
 // Importing image assets
-import xourceLogo from "@/assets/Logo.svg";
+import xourceLogo from "@/assets/logo.svg";
 import xourceIcon from "@/assets/Icon.svg";
 
 // Importing the `StaticImageData` type from Next.js
