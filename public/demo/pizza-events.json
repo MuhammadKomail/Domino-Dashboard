@@ -1,0 +1,11 @@
+{
+  "events": [
+    {
+      "id": "EVT-0001",
+      "time": "00:00:00",
+      "size": "Medium",
+      "confidence": 0.95,
+      "source": "Cutting Table 1"
+    }
+  ]
+}

@@ -39,9 +39,31 @@ type DetectionEvent = {
   size: PizzaSize;
   confidence: number;
   source: string;
+  timestamp?: string;
+};
+
+const mulberry32 = (seed: number) => {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6D2B79F5;
+    let x = t;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+const seedFromString = (s: string): number => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i += 1) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 };
 
 const DEFAULT_DEMO_VIDEO_PATH = "/demo/cutting-table.mp4";
+const DEFAULT_DEMO_DRIVE_PREVIEW_URL = "https://drive.google.com/file/d/1yzyiOdC5MMM3luslWWXcqB7jUkb5xhV-/preview";
 
 const getBasePath = (): string => {
   if (typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_BASE_PATH) {
@@ -91,6 +113,22 @@ const toHms = (seconds: number) => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 };
 
+const hmsToSeconds = (hms: string): number => {
+  const parts = String(hms || "").split(":").map((x) => Number(x));
+  if (parts.length !== 3) return 0;
+  const [h, m, s] = parts;
+  if (!Number.isFinite(h) || !Number.isFinite(m) || !Number.isFinite(s)) return 0;
+  return Math.max(0, Math.floor(h * 3600 + m * 60 + s));
+};
+
+const parseDateTimeMs = (v: unknown): number | null => {
+  if (v == null) return null;
+  const s = String(v);
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return null;
+  return t;
+};
+
 const sizeColor: Record<PizzaSize, string> = {
   Small: "#1976d2",
   Medium: "#E92137",
@@ -103,7 +141,27 @@ const formatMinuteTick = (m: string): string => {
   return parts[parts.length - 1] ?? m;
 };
 
-const PixelAnalyticsDashboard: React.FC = () => {
+type PixelAnalyticsDashboardProps = {
+  eventsJsonPath?: string;
+  timeRange?: TimeRangeKey;
+  onTimeRangeChange?: (r: TimeRangeKey) => void;
+  showTimeRangeControl?: boolean;
+  showVideo?: boolean;
+  dateTimeFrom?: string;
+  dateTimeTo?: string;
+};
+
+type TimeRangeKey = "all" | "5m" | "10m" | "30m" | "60m";
+
+const PixelAnalyticsDashboard: React.FC<PixelAnalyticsDashboardProps> = ({
+  eventsJsonPath = "/demo/pizza-events.json",
+  timeRange: timeRangeProp,
+  onTimeRangeChange,
+  showTimeRangeControl = true,
+  showVideo = true,
+  dateTimeFrom,
+  dateTimeTo,
+}) => {
   const pathname = usePathname();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastAllowedTimeRef = useRef(0);
@@ -120,6 +178,14 @@ const PixelAnalyticsDashboard: React.FC = () => {
   const [chartSizeFilter, setChartSizeFilter] = useState<PizzaSize | "All">("All");
   const [eventConfidenceMin, setEventConfidenceMin] = useState(0.7);
   const [eventSizeFilter, setEventSizeFilter] = useState<PizzaSize | "All">("All");
+  const [eventsFromFile, setEventsFromFile] = useState<DetectionEvent[] | null>(null);
+  const [timeRangeState, setTimeRangeState] = useState<TimeRangeKey>("all");
+
+  const timeRange = timeRangeProp ?? timeRangeState;
+  const setTimeRange = (r: TimeRangeKey) => {
+    if (onTimeRangeChange) onTimeRangeChange(r);
+    if (timeRangeProp == null) setTimeRangeState(r);
+  };
 
   const basePath = useMemo(() => {
     const fromNext = getBasePath();
@@ -132,6 +198,51 @@ const PixelAnalyticsDashboard: React.FC = () => {
   }, [pathname]);
 
   const demoVideoUrl = useMemo(() => joinPath(basePath, DEFAULT_DEMO_VIDEO_PATH), [basePath]);
+  const demoEventsJsonUrl = useMemo(() => joinPath(basePath, eventsJsonPath), [basePath, eventsJsonPath]);
+  const demoEmbedUrl = useMemo(() => DEFAULT_DEMO_DRIVE_PREVIEW_URL, []);
+  const isDemoEmbed = videoUrl === demoEmbedUrl;
+  const isDemoStream = videoUrl === demoVideoUrl || isDemoEmbed;
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(demoEventsJsonUrl, { cache: "no-store" });
+        if (!res.ok) {
+          if (!cancelled) setEventsFromFile(null);
+          return;
+        }
+        const json = await res.json();
+        const rawEvents = (json && Array.isArray(json.events)) ? json.events : [];
+        const next: DetectionEvent[] = rawEvents
+          .map((e: any, idx: number): DetectionEvent | null => {
+            const size = String(e?.size || "");
+            if (size !== "Small" && size !== "Medium" && size !== "Large" && size !== "XL") return null;
+            const time = String(e?.time || "00:00:00");
+            const confidence = Number(e?.confidence);
+            const source = String(e?.source || "Cutting Table 1");
+            const id = String(e?.id || `EVT-${String(idx + 1).padStart(4, "0")}`);
+            const timestamp = (e?.timestamp ?? e?.datetime ?? e?.dateTime) != null ? String(e?.timestamp ?? e?.datetime ?? e?.dateTime) : undefined;
+            return {
+              id,
+              time,
+              size: size as PizzaSize,
+              confidence: Number.isFinite(confidence) ? confidence : 0.9,
+              source,
+              ...(timestamp ? { timestamp } : {}),
+            };
+          })
+          .filter(Boolean) as DetectionEvent[];
+        if (!cancelled) setEventsFromFile(next.length > 0 ? next : null);
+      } catch {
+        if (!cancelled) setEventsFromFile(null);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [demoEventsJsonUrl]);
 
   useEffect(() => {
     return () => {
@@ -141,7 +252,7 @@ const PixelAnalyticsDashboard: React.FC = () => {
 
   useEffect(() => {
     if (videoUrl) return;
-    setVideoUrl(demoVideoUrl);
+    setVideoUrl(demoEmbedUrl);
     setVideoName("cutting-table.mp4");
     setCompleted(false);
     setProgress(0);
@@ -149,11 +260,13 @@ const PixelAnalyticsDashboard: React.FC = () => {
     setVideoReady(false);
     setVideoError("");
     setAutoplayBlocked(false);
-  }, [demoVideoUrl, videoUrl]);
+  }, [demoEmbedUrl, videoUrl]);
 
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+
+    if (isDemoEmbed) return;
 
     const isDemo = videoUrl === demoVideoUrl;
 
@@ -193,19 +306,21 @@ const PixelAnalyticsDashboard: React.FC = () => {
       v.addEventListener("canplay", tryPlay);
       v.addEventListener("play", (): void => setAutoplayBlocked(false));
     }
+    v.addEventListener("loadedmetadata", onLoaded);
+    v.addEventListener("canplay", onLoaded);
     v.addEventListener("loadeddata", onLoaded);
-    v.addEventListener("canplaythrough", onLoaded);
     v.addEventListener("error", onError);
     return () => {
       if (isDemo) {
         v.removeEventListener("loadedmetadata", tryPlay);
         v.removeEventListener("canplay", tryPlay);
       }
+      v.removeEventListener("loadedmetadata", onLoaded);
+      v.removeEventListener("canplay", onLoaded);
       v.removeEventListener("loadeddata", onLoaded);
-      v.removeEventListener("canplaythrough", onLoaded);
       v.removeEventListener("error", onError);
     };
-  }, [demoVideoUrl, videoError, videoUrl]);
+  }, [demoVideoUrl, isDemoEmbed, videoError, videoUrl]);
 
   useEffect(() => {
     if (!processing) return;
@@ -225,6 +340,8 @@ const PixelAnalyticsDashboard: React.FC = () => {
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
+
+    if (isDemoEmbed) return;
 
     const isDemo = videoUrl === demoVideoUrl;
 
@@ -273,32 +390,109 @@ const PixelAnalyticsDashboard: React.FC = () => {
       v.removeEventListener("timeupdate", onTimeForLive);
       v.removeEventListener("ended", onEnded);
     };
-  }, [demoVideoUrl, videoUrl]);
+  }, [demoVideoUrl, isDemoEmbed, videoUrl]);
 
-  const minuteData: MinutePoint[] = useMemo(() => {
-    const mins = 60;
-    const out: MinutePoint[] = [];
+  useEffect(() => {
+    if (!isDemoEmbed) return;
+    if (!isPlaying) return;
+    const id = window.setInterval(() => {
+      setElapsedSec((s) => s + 1);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [isDemoEmbed, isPlaying]);
 
-    for (let i = 0; i < mins; i += 1) {
-      const peak = 1 + 0.7 * Math.sin((i / (mins - 1)) * Math.PI);
-      const noise = ((Math.random() - 0.5) * 2) * 0.12;
-      const total = Math.max(0, Math.round(14 * (peak + noise)));
-      const small = Math.round(total * 0.22);
-      const xl = Math.round(total * 0.09);
-      const large = Math.round(total * 0.31);
-      const medium = Math.max(0, total - small - xl - large);
+  const baseEvents: DetectionEvent[] = useMemo(() => {
+    if (!completed) return [];
+    if (eventsFromFile && eventsFromFile.length > 0) return eventsFromFile;
+
+    const out: DetectionEvent[] = [];
+    const sizes: PizzaSize[] = ["Small", "Medium", "Large", "XL"];
+    const weights = [0.22, 0.38, 0.31, 0.09];
+    const totalEvents = 220;
+
+    const rng = mulberry32(seedFromString(`${videoName || "demo"}:events`));
+
+    for (let i = 0; i < totalEvents; i += 1) {
+      const t = Math.floor((i / totalEvents) * 3600);
+      const r = rng();
+      let pick: PizzaSize = "Medium";
+      let acc = 0;
+      for (let k = 0; k < sizes.length; k += 1) {
+        acc += weights[k] ?? 0;
+        if (r <= acc) {
+          pick = sizes[k] ?? "Medium";
+          break;
+        }
+      }
+
+      const confidence = clamp(0.72 + rng() * 0.27, 0, 1);
       out.push({
-        minute: toMinLabel(i),
-        total,
-        Small: small,
-        Medium: medium,
-        Large: large,
-        XL: xl,
+        id: `EVT-${String(i + 1).padStart(4, "0")}`,
+        time: toHms(t),
+        size: pick,
+        confidence: Math.round(confidence * 1000) / 1000,
+        source: "Cutting Table 1",
+      });
+    }
+    return out;
+  }, [completed, eventsFromFile, videoName]);
+
+  const timeFilteredEvents: DetectionEvent[] = useMemo(() => {
+    if (!completed) return [];
+
+    const hasDateTimeFilter = !!dateTimeFrom || !!dateTimeTo;
+    if (hasDateTimeFilter) {
+      const fromMs = parseDateTimeMs(dateTimeFrom);
+      const toMs = parseDateTimeMs(dateTimeTo);
+
+      // If datetime filter is requested, only events with a valid timestamp participate.
+      return baseEvents.filter((e) => {
+        const ms = parseDateTimeMs(e.timestamp);
+        if (ms == null) return false;
+        if (fromMs != null && ms < fromMs) return false;
+        if (toMs != null && ms > toMs) return false;
+        return true;
       });
     }
 
-    return out;
-  }, [completed]);
+    if (timeRange === "all") return baseEvents;
+
+    const minutes = timeRange === "5m" ? 5 : timeRange === "10m" ? 10 : timeRange === "30m" ? 30 : 60;
+    const secs = minutes * 60;
+    if (baseEvents.length === 0) return [];
+    const times = baseEvents.map((e) => hmsToSeconds(e.time));
+    const maxSec = Math.max(0, ...times);
+    const minSec = Math.max(0, maxSec - secs);
+    return baseEvents.filter((e) => {
+      const s = hmsToSeconds(e.time);
+      return s >= minSec && s <= maxSec;
+    });
+  }, [baseEvents, completed, dateTimeFrom, dateTimeTo, timeRange]);
+
+  const events = timeFilteredEvents;
+
+  const minuteData: MinutePoint[] = useMemo(() => {
+    const mins = 60;
+    const buckets: MinutePoint[] = Array.from({ length: mins }).map((_, i) => ({
+      minute: toMinLabel(i),
+      total: 0,
+      Small: 0,
+      Medium: 0,
+      Large: 0,
+      XL: 0,
+    }));
+
+    for (const e of events) {
+      const sec = hmsToSeconds(e.time);
+      const minIdx = clamp(Math.floor(sec / 60), 0, mins - 1);
+      const b = buckets[minIdx];
+      if (!b) continue;
+      b.total += 1;
+      (b as any)[e.size] = ((b as any)[e.size] ?? 0) + 1;
+    }
+
+    return buckets;
+  }, [events]);
 
   const totals = useMemo(() => {
     const base = { total: 0, Small: 0, Medium: 0, Large: 0, XL: 0 };
@@ -331,43 +525,27 @@ const PixelAnalyticsDashboard: React.FC = () => {
     return { count: best, start: toMinLabel(bestStart), end: toMinLabel(bestStart + 9) };
   }, [minuteData]);
 
-  const events: DetectionEvent[] = useMemo(() => {
-    if (!completed) return [];
-    const out: DetectionEvent[] = [];
-    const sizes: PizzaSize[] = ["Small", "Medium", "Large", "XL"];
-    const weights = [0.22, 0.38, 0.31, 0.09];
-    const totalEvents = 220;
-
-    for (let i = 0; i < totalEvents; i += 1) {
-      const t = Math.floor((i / totalEvents) * 3600);
-      const r = Math.random();
-      let pick: PizzaSize = "Medium";
-      let acc = 0;
-      for (let k = 0; k < sizes.length; k += 1) {
-        acc += weights[k] ?? 0;
-        if (r <= acc) {
-          pick = sizes[k] ?? "Medium";
-          break;
-        }
-      }
-
-      const confidence = clamp(0.72 + Math.random() * 0.27, 0, 1);
-      out.push({
-        id: `EVT-${String(i + 1).padStart(4, "0")}`,
-        time: toHms(t),
-        size: pick,
-        confidence: Math.round(confidence * 1000) / 1000,
-        source: "Cutting Table 1",
-      });
-    }
-    return out;
-  }, [completed]);
-
   const filteredEvents = useMemo(() => {
     return events
       .filter((e) => e.confidence >= eventConfidenceMin)
       .filter((e) => (eventSizeFilter === "All" ? true : e.size === eventSizeFilter));
   }, [eventConfidenceMin, eventSizeFilter, events]);
+
+  const timeControls = (
+    <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+      <select
+        value={timeRange}
+        onChange={(e) => setTimeRange(e.target.value as TimeRangeKey)}
+        className="px-2 py-1 border rounded text-xs text-gray-700"
+      >
+        <option value="all">All time</option>
+        <option value="5m">Last 5 min</option>
+        <option value="10m">Last 10 min</option>
+        <option value="30m">Last 30 min</option>
+        <option value="60m">Last 60 min</option>
+      </select>
+    </Box>
+  );
 
   const chartMinuteData = useMemo(() => {
     if (chartSizeFilter === "All") return minuteData;
@@ -415,6 +593,7 @@ const PixelAnalyticsDashboard: React.FC = () => {
 
   const chartControls = (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+      {showTimeRangeControl ? timeControls : null}
       <select
         value={chartSizeFilter}
         onChange={(e) => setChartSizeFilter(e.target.value as any)}
@@ -431,6 +610,7 @@ const PixelAnalyticsDashboard: React.FC = () => {
 
   const eventControls = (
     <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
+      {showTimeRangeControl ? timeControls : null}
       <select
         value={eventSizeFilter}
         onChange={(e) => setEventSizeFilter(e.target.value as any)}
@@ -507,103 +687,121 @@ const PixelAnalyticsDashboard: React.FC = () => {
               </Box>
             </Box>
 
-            <Box sx={{ mt: 2, display: "grid", gridTemplateColumns: { xs: "1fr", lg: "1.35fr 1fr" }, gap: 2 }}>
-              <Box sx={{ position: "relative", borderRadius: 2, overflow: "hidden", border: "1px solid #EAECF0", backgroundColor: "#0B1220", height: { xs: 260, sm: 360, lg: 420 } }}>
-                {videoUrl ? (
-                  <video
-                    ref={videoRef}
-                    controls={videoUrl !== demoVideoUrl}
-                    playsInline
-                    autoPlay={videoUrl === demoVideoUrl}
-                    muted={videoUrl === demoVideoUrl}
-                    loop
-                    preload="metadata"
-                    controlsList={videoUrl === demoVideoUrl ? "nodownload noplaybackrate noremoteplayback" : undefined}
-                    disablePictureInPicture={videoUrl === demoVideoUrl}
-                    style={{ width: "100%", height: "100%", display: "block", objectFit: "cover" }}
-                  >
-                    <source src={videoUrl} type="video/mp4" />
-                  </video>
-                ) : (
-                  <Box sx={{ p: 4, color: "rgba(255,255,255,0.85)", minHeight: 320, display: "flex", flexDirection: "column", gap: 1, alignItems: "center", justifyContent: "center" }}>
-                    <Typography variant="h6" sx={{ fontWeight: 700 }}>
-                      Upload your cutting table video
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.7)", textAlign: "center" }}>
-                      The portal will simulate processing and show size-wise counting analytics.
-                    </Typography>
-                  </Box>
-                )}
-
-                {(processing || completed) && (
-                  <Box sx={{ position: "absolute", inset: 12, pointerEvents: "none", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-                    <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75, borderRadius: 999, backgroundColor: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.18)" }}>
-                      <Box sx={{ width: 8, height: 8, borderRadius: 999, backgroundColor: processing ? "#F59E0B" : "#22C55E" }} />
-                      <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.85)" }}>
-                        {processing ? `Processing ${Math.round(progress)}%` : "Analytics Ready"}
+            <Box sx={{ mt: 2, display: "grid", gridTemplateColumns: { xs: "1fr", lg: showVideo ? "1.35fr 1fr" : "1fr" }, gap: 2 }}>
+              {showVideo ? (
+                <Box sx={{ position: "relative", borderRadius: 2, overflow: "hidden", border: "1px solid #EAECF0", backgroundColor: "#0B1220", height: { xs: 260, sm: 360, lg: 420 } }}>
+                  {videoUrl ? (
+                    isDemoEmbed ? (
+                      <iframe
+                        src={demoEmbedUrl}
+                        title="Cutting Table Live Stream"
+                        allow="autoplay; encrypted-media"
+                        allowFullScreen
+                        onLoad={() => {
+                          setVideoReady(true);
+                          setVideoError("");
+                          setAutoplayBlocked(false);
+                          setIsPlaying(true);
+                        }}
+                        style={{ width: "100%", height: "100%", border: 0, display: "block" }}
+                      />
+                    ) : (
+                      <video
+                        ref={videoRef}
+                        controls={!isDemoStream}
+                        playsInline
+                        autoPlay={isDemoStream}
+                        muted={isDemoStream}
+                        loop
+                        preload={isDemoStream ? "auto" : "metadata"}
+                        controlsList={isDemoStream ? "nodownload noplaybackrate noremoteplayback" : undefined}
+                        disablePictureInPicture={isDemoStream}
+                        style={{ width: "100%", height: "100%", display: "block", objectFit: "cover" }}
+                      >
+                        <source src={videoUrl} type="video/mp4" />
+                      </video>
+                    )
+                  ) : (
+                    <Box sx={{ p: 4, color: "rgba(255,255,255,0.85)", minHeight: 320, display: "flex", flexDirection: "column", gap: 1, alignItems: "center", justifyContent: "center" }}>
+                      <Typography variant="h6" sx={{ fontWeight: 700 }}>
+                        Upload your cutting table video
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.7)", textAlign: "center" }}>
+                        The portal will simulate processing and show size-wise counting analytics.
                       </Typography>
                     </Box>
-                    {videoName && videoUrl !== demoVideoUrl && (
-                      <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.75)" }}>
-                        {videoName}
+                  )}
+
+                  {(processing || completed) && (
+                    <Box sx={{ position: "absolute", inset: 12, pointerEvents: "none", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75, borderRadius: 999, backgroundColor: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.18)" }}>
+                        <Box sx={{ width: 8, height: 8, borderRadius: 999, backgroundColor: processing ? "#F59E0B" : "#22C55E" }} />
+                        <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.85)" }}>
+                          {processing ? `Processing ${Math.round(progress)}%` : "Analytics Ready"}
+                        </Typography>
+                      </Box>
+                      {videoName && !isDemoStream && (
+                        <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.75)" }}>
+                          {videoName}
+                        </Typography>
+                      )}
+                    </Box>
+                  )}
+
+                  {isDemoStream && (
+                    <Box sx={{ position: "absolute", left: 12, bottom: 12, display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75, borderRadius: 999, backgroundColor: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.18)", pointerEvents: "none" }}>
+                      <Box sx={{ width: 8, height: 8, borderRadius: 999, backgroundColor: "#EF4444", boxShadow: "0 0 0 4px rgba(239,68,68,0.18)" }} />
+                      <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.9)", fontWeight: 700 }}>
+                        LIVE STREAM
                       </Typography>
-                    )}
-                  </Box>
-                )}
-
-                {videoUrl === demoVideoUrl && (
-                  <Box sx={{ position: "absolute", left: 12, bottom: 12, display: "flex", alignItems: "center", gap: 1, px: 1.25, py: 0.75, borderRadius: 999, backgroundColor: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.18)", pointerEvents: "none" }}>
-                    <Box sx={{ width: 8, height: 8, borderRadius: 999, backgroundColor: "#EF4444", boxShadow: "0 0 0 4px rgba(239,68,68,0.18)" }} />
-                    <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.9)", fontWeight: 700 }}>
-                      LIVE STREAM
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.7)" }}>
-                      Cutting Table Cam
-                    </Typography>
-                  </Box>
-                )}
-
-                {videoUrl === demoVideoUrl && autoplayBlocked && (
-                  <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const v = videoRef.current;
-                        if (!v) return;
-                        v.muted = true;
-                        v.volume = 0;
-                        v.play().then(() => setAutoplayBlocked(false)).catch(() => setAutoplayBlocked(true));
-                      }}
-                      className="px-4 py-2 rounded-md text-sm text-white bg-gradient-to-r from-[#E92137] to-[#1976d2] hover:from-[#C81D30] hover:to-[#115293]"
-                    >
-                      Start Live Stream
-                    </button>
-                  </Box>
-                )}
-
-                {videoUrl === demoVideoUrl && !videoError && !videoReady && !autoplayBlocked && (
-                  <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                    <Box sx={{ px: 2, py: 1, borderRadius: 999, backgroundColor: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.18)" }}>
-                      <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.85)" }}>
-                        Loading live stream…
+                      <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.7)" }}>
+                        Cutting Table Cam
                       </Typography>
                     </Box>
-                  </Box>
-                )}
+                  )}
 
-                {!!videoError && (
-                  <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <Box sx={{ maxWidth: 420, mx: 2, p: 2, borderRadius: 2, backgroundColor: "rgba(0,0,0,0.65)", border: "1px solid rgba(255,255,255,0.18)" }}>
-                      <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.92)", fontWeight: 700 }}>
-                        {videoError}
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.72)", display: "block", mt: 0.5 }}>
-                        Check that the file exists at public/demo/cutting-table.mp4 and refresh.
-                      </Typography>
+                  {!isDemoEmbed && videoUrl === demoVideoUrl && autoplayBlocked && (
+                    <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const v = videoRef.current;
+                          if (!v) return;
+                          v.muted = true;
+                          v.volume = 0;
+                          v.play().then(() => setAutoplayBlocked(false)).catch(() => setAutoplayBlocked(true));
+                        }}
+                        className="px-4 py-2 rounded-md text-sm text-white bg-gradient-to-r from-[#E92137] to-[#1976d2] hover:from-[#C81D30] hover:to-[#115293]"
+                      >
+                        Start Live Stream
+                      </button>
                     </Box>
-                  </Box>
-                )}
-              </Box>
+                  )}
+
+                  {isDemoStream && !videoError && !videoReady && !autoplayBlocked && (
+                    <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                      <Box sx={{ px: 2, py: 1, borderRadius: 999, backgroundColor: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.18)" }}>
+                        <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.85)" }}>
+                          Loading live stream…
+                        </Typography>
+                      </Box>
+                    </Box>
+                  )}
+
+                  {!!videoError && (
+                    <Box sx={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <Box sx={{ maxWidth: 420, mx: 2, p: 2, borderRadius: 2, backgroundColor: "rgba(0,0,0,0.65)", border: "1px solid rgba(255,255,255,0.18)" }}>
+                        <Typography variant="body2" sx={{ color: "rgba(255,255,255,0.92)", fontWeight: 700 }}>
+                          {videoError}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: "rgba(255,255,255,0.72)", display: "block", mt: 0.5 }}>
+                          Check that the file exists at public/demo/cutting-table.mp4 and refresh.
+                        </Typography>
+                      </Box>
+                    </Box>
+                  )}
+                </Box>
+              ) : null}
 
               <Box sx={{ display: "grid", gridTemplateColumns: "1fr", gap: 1.25 }}>
                 <Paper elevation={0} sx={{ p: 2, borderRadius: 2, border: "1px solid #EAECF0", overflow: "hidden" }}>
@@ -641,14 +839,14 @@ const PixelAnalyticsDashboard: React.FC = () => {
                 </Paper>
 
                 <Paper elevation={0} sx={{ p: 2, borderRadius: 2, border: "1px solid #EAECF0" }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.75 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
                     Peak 10-min Window
                   </Typography>
-                  <Typography variant="h6" sx={{ fontWeight: 900 }}>
+                  <Typography variant="h5" sx={{ fontWeight: 800 }}>
                     {completed ? formatNumber(peak10Min.count) : "—"}
                   </Typography>
-                  <Typography variant="body2" sx={{ color: "#64748B" }}>
-                    {completed ? `${peak10Min.start} → ${peak10Min.end}` : "—"}
+                  <Typography variant="body2" sx={{ mt: 0.5, color: "#64748B" }}>
+                    {completed ? `${formatMinuteTick(peak10Min.start)}  ${formatMinuteTick(peak10Min.end)}` : "—"}
                   </Typography>
                 </Paper>
               </Box>
@@ -719,30 +917,6 @@ const PixelAnalyticsDashboard: React.FC = () => {
                 </defs>
                 <Bar dataKey="count" fill="url(#tableBars)" radius={[8, 8, 0, 0]} />
               </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
-        </Grid>
-
-        <Grid item xs={12} lg={6}>
-          <ChartCard title="Size Over Time" subtitle="Stacked per-minute counts" rightControls={chartControls}>
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={minuteData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EEF2F7" />
-                <XAxis
-                  dataKey="minute"
-                  tick={{ fontSize: 12 }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval={5}
-                  tickFormatter={formatMinuteTick}
-                />
-                <YAxis tick={{ fontSize: 12 }} tickLine={false} axisLine={false} width={42} />
-                <Tooltip formatter={(v: any) => [formatNumber(Number(v) || 0), "Pizzas"]} />
-                <Area type="monotone" dataKey="Small" stackId="1" stroke={sizeColor.Small} fill={sizeColor.Small} fillOpacity={0.25} />
-                <Area type="monotone" dataKey="Medium" stackId="1" stroke={sizeColor.Medium} fill={sizeColor.Medium} fillOpacity={0.22} />
-                <Area type="monotone" dataKey="Large" stackId="1" stroke={sizeColor.Large} fill={sizeColor.Large} fillOpacity={0.2} />
-                <Area type="monotone" dataKey="XL" stackId="1" stroke={sizeColor.XL} fill={sizeColor.XL} fillOpacity={0.18} />
-              </AreaChart>
             </ResponsiveContainer>
           </ChartCard>
         </Grid>

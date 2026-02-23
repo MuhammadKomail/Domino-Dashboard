@@ -475,6 +475,7 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
 
   const navItems = [
     { text: 'Dashboard', href: '/dashboard', icon: <DashboardOutlinedIcon /> },
+    { text: 'Pizza Analytics', href: '/dashboard/pizza-analytics', icon: <DashboardOutlinedIcon /> },
     { text: 'User Management', href: '/user-management', icon: <ManageAccountsOutlinedIcon /> },
     { text: 'Role Management', href: '/roles', icon: <ManageAccountsOutlinedIcon /> },
     { text: 'Change Password', href: '/change-password', icon: <LockOutlinedIcon /> },
@@ -659,21 +660,11 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           {(() => {
             let currentPath = pathname === '/' ? '/dashboard' : pathname;
             if (currentPath.startsWith('/admin/dashboard')) currentPath = '/dashboard';
-            const current = navItems.find((n) => currentPath.startsWith(n.href));
+            const current = [...navItems]
+              .sort((a, b) => (b.href.length - a.href.length))
+              .find((n) => currentPath.startsWith(n.href));
             let title = current?.text || 'Dashboard';
             let trail: string[] = [title];
-
-            // Dashboard specific breadcrumb based on selection
-            if (current?.href === '/dashboard') {
-              if (selectedWell) {
-                const [site, well] = selectedWell.split('__');
-                title = well || title;
-                trail = [site, well];
-              } else if (expandedSite) {
-                title = expandedSite;
-                trail = [expandedSite];
-              }
-            }
 
             return (
               <>
@@ -701,8 +692,9 @@ const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
                   {(() => {
                     const well = selectedWell ? selectedWell.split('__')[1] : null;
                     const view = searchParams?.get('view');
-                    if (!isDashboard) return children;
-                    return <PixelAnalyticsDashboard />;
+                    const isDashboardRoot = pathname === '/' || pathname === '/dashboard' || pathname === '/admin/dashboard';
+                    if (!isDashboardRoot) return children;
+                    return <PixelAnalyticsDashboard showVideo={false} />;
                   })()}
                 </Box>
               </>
