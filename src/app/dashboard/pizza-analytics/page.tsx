@@ -109,10 +109,8 @@ export default function PizzaAnalyticsPage() {
   }, [branches, selectedBranchKey]);
 
   const eventsJsonPath = useMemo(() => {
-    if (branchSelect === "all") return "/demo/pizza-events.json";
-    if (!selectedBranch) return "/demo/pizza-events.json";
-    return `/demo/pizza-events-${selectedBranch.locationId}.json`;
-  }, [branchSelect, selectedBranch]);
+    return "/demo/pizza-events.json";
+  }, []);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2, px: { xs: 1, sm: 0 } }}>

@@ -63,7 +63,7 @@ const seedFromString = (s: string): number => {
 };
 
 const DEFAULT_DEMO_VIDEO_PATH = "/demo/cutting-table.mp4";
-const DEFAULT_DEMO_DRIVE_PREVIEW_URL = "https://drive.google.com/file/d/1yzyiOdC5MMM3luslWWXcqB7jUkb5xhV-/preview";
+const DEFAULT_DEMO_DRIVE_PREVIEW_URL = "https://drive.google.com/file/d/1SoXuctG0ByshdkC1pQaqoA4_AS-bmsUy/preview";
 
 const getBasePath = (): string => {
   if (typeof process !== "undefined" && process.env && process.env.NEXT_PUBLIC_BASE_PATH) {
