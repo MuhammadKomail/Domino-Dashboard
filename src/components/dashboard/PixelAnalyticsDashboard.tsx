@@ -124,7 +124,15 @@ const hmsToSeconds = (hms: string): number => {
 const parseDateTimeMs = (v: unknown): number | null => {
   if (v == null) return null;
   const s = String(v);
-  const t = Date.parse(s);
+  let t = Date.parse(s);
+  if (!Number.isFinite(t)) {
+    // Handle custom format: 11-23-2025 sun 00:00:09
+    const match = s.match(/^(\d{2})-(\d{2})-(\d{4})\s+\w+\s+(\d{2}:\d{2}:\d{2})$/);
+    if (match) {
+      const [, mm, dd, yyyy, time] = match;
+      t = Date.parse(`${yyyy}-${mm}-${dd}T${time}`);
+    }
+  }
   if (!Number.isFinite(t)) return null;
   return t;
 };
@@ -162,6 +170,13 @@ const PixelAnalyticsDashboard: React.FC<PixelAnalyticsDashboardProps> = ({
   dateTimeFrom,
   dateTimeTo,
 }) => {
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const pathname = usePathname();
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const lastAllowedTimeRef = useRef(0);
@@ -554,7 +569,24 @@ const PixelAnalyticsDashboard: React.FC<PixelAnalyticsDashboardProps> = ({
 
   const eventColumns: Column<DetectionEvent>[] = useMemo(
     () => [
-      { key: "time", header: "Time" },
+      {
+        key: "time",
+        header: "Date / Time",
+        render: (r) => {
+          const parts = r.timestamp?.split(" ") || [];
+          const hasTimestamp = parts.length >= 3;
+          return (
+            <Box>
+              <Typography variant="body2" sx={{ fontWeight: 700, color: "#1E293B", fontSize: "0.75rem" }}>
+                {hasTimestamp ? `${parts[0]} (${parts[1]?.toUpperCase()})` : "Session Event"}
+              </Typography>
+              <Typography variant="caption" sx={{ color: "#64748B", display: "block", fontSize: "0.7rem", mt: -0.25 }}>
+                {hasTimestamp ? parts[2] : r.time}
+              </Typography>
+            </Box>
+          );
+        },
+      },
       {
         key: "size",
         header: "Size",
@@ -576,9 +608,16 @@ const PixelAnalyticsDashboard: React.FC<PixelAnalyticsDashboardProps> = ({
 
   const downloadCsv = () => {
     const rows = filteredEvents;
-    const header = ["time", "size", "confidence", "source", "id"];
+    const header = ["date_time", "time_only", "size", "confidence", "source", "id"];
     const lines = [header.join(",")].concat(
-      rows.map((r) => [r.time, r.size, String(r.confidence), r.source, r.id].map((x) => `"${String(x).replaceAll('"', '""')}"`).join(","))
+      rows.map((r) => [
+        r.timestamp || r.time,
+        r.time,
+        r.size,
+        String(r.confidence),
+        r.source,
+        r.id
+      ].map((x) => `"${String(x).replaceAll('"', '""')}"`).join(","))
     );
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -682,6 +721,12 @@ const PixelAnalyticsDashboard: React.FC<PixelAnalyticsDashboardProps> = ({
                   />
                   <Typography variant="caption" sx={{ color: "#475569" }}>
                     {isPlaying ? "LIVE" : "Paused"} • {toHms(elapsedSec)}
+                  </Typography>
+                </Box>
+
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1, px: 1.5, py: 0.75, borderRadius: 2, backgroundColor: "#F8FAFC", border: "1px solid #E2E8F0" }}>
+                  <Typography variant="caption" sx={{ color: "#1E293B", fontWeight: 700, fontFamily: "monospace" }}>
+                    {currentTime.toLocaleDateString()} {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                   </Typography>
                 </Box>
               </Box>
@@ -929,7 +974,7 @@ const PixelAnalyticsDashboard: React.FC<PixelAnalyticsDashboardProps> = ({
                   Detection Events
                 </Typography>
                 <Typography variant="caption" sx={{ color: "#64748B" }}>
-                  Full detail (demo) | filter by size & confidence
+                  Detailed log with Date & Time | filtered by size & confidence
                 </Typography>
               </Box>
               {eventControls}

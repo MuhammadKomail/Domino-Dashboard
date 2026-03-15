@@ -167,7 +167,7 @@ export default function PizzaAnalyticsPage() {
                 type="datetime-local"
                 value={dateTimeFrom}
                 onChange={(e) => setDateTimeFrom(e.target.value)}
-                className="px-2 py-1 border rounded text-xs text-gray-700 min-w-[200px] bg-white"
+                className="px-2 py-1.5 border border-[#E2E8F0] rounded shadow-sm text-xs text-gray-700 min-w-[200px] bg-white focus:ring-2 focus:ring-[#1976d2]/20 focus:border-[#1976d2] outline-none transition-all"
               />
             </Box>
 
@@ -179,7 +179,7 @@ export default function PizzaAnalyticsPage() {
                 type="datetime-local"
                 value={dateTimeTo}
                 onChange={(e) => setDateTimeTo(e.target.value)}
-                className="px-2 py-1 border rounded text-xs text-gray-700 min-w-[200px] bg-white"
+                className="px-2 py-1.5 border border-[#E2E8F0] rounded shadow-sm text-xs text-gray-700 min-w-[200px] bg-white focus:ring-2 focus:ring-[#1976d2]/20 focus:border-[#1976d2] outline-none transition-all"
               />
             </Box>
           </Box>
